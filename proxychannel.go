@@ -71,12 +71,23 @@ func (pc *Proxychannel) runExtensionManager() {
 	Logger.Info("Cleanup ExtensionManager done, ExtensionManager gracefully stopped!\n")
 }
 
-func (pc *Proxychannel) runServer() {
-	ctx, cancel := context.WithCancel(context.Background())
+func (pc *Proxychannel) runServerBlocking(parentCtx context.Context) error {
+	providedLifetimeCtx := parentCtx != nil
+	if !providedLifetimeCtx {
+		parentCtx = context.Background()
+	}
+
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 	defer close(pc.serverDone)
 
 	pc.server.BaseContext = func(_ net.Listener) context.Context { return ctx }
+
+	return pc.server.ListenAndServe()
+}
+
+func (pc *Proxychannel) runServer() {
+	defer close(pc.serverDone)
 
 	stop := func() {
 		gracefulCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -91,7 +102,7 @@ func (pc *Proxychannel) runServer() {
 
 	// Run server
 	go func() {
-		if err := pc.server.ListenAndServe(); err != http.ErrServerClosed {
+		if err := pc.runServerBlocking(context.Background()); err != http.ErrServerClosed {
 			Logger.Errorf("HTTP server ListenAndServe: %v", err)
 			os.Exit(1)
 		}
@@ -118,6 +129,16 @@ func (pc *Proxychannel) runServer() {
 	}()
 
 	stop()
+}
+
+// RunContext launches the ExtensionManager and the HTTP server
+func (pc *Proxychannel) RunContext(ctx context.Context) error {
+	pc.waitGroup.Add(1)
+	go pc.runExtensionManager()
+	err := pc.runServerBlocking(ctx)
+	pc.waitGroup.Wait()
+
+	return err
 }
 
 // Run launches the ExtensionManager and the HTTP server
